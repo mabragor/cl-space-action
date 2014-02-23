@@ -12,13 +12,18 @@
 (defparameter *out-in-ratio* 1)
 
 (defparameter *geometry* :toric)
+(defparameter *dimension* 2)
+(defparameter *graviconstant* 0.0000001)
+
+(defparameter *bg-color* (make-color :red 65535 :green 65535 :blue 65535))
 
 (defclass material-dot ()
   ((m :initarg :mass :initform 1)
    (x :initarg :x :initform (error "ship should be positioned somewhere."))
    (y :initarg :y :initform (error "ship should be positioned somewhere."))
    (vx :initarg :velocity-x :initform 0)
-   (vy :initarg :velocity-y :initform 0)))
+   (vy :initarg :velocity-y :initform 0)
+   (force :initform (list 0 0))))
    
 (defclass rotator ()
   ((phi :initarg :angle :initform 0)
@@ -35,7 +40,13 @@
    (rear-force :initform 0)
    (front-force :initform 0)
    (left-force :initform 0)
-   (right-force :initform 0)))
+   (right-force :initform 0)
+   (color :initarg :color :initform (make-color :red 0 :green 0 :blue 0))))
+
+(defclass planet (material-dot)
+  ((radius :initarg :radius :initform 1)
+   (color :initarg :color :initform (make-color :red 0 :green 0 :blue 0))
+   (prev-draw-data :initform nil)))
 
 (defgeneric calculate-momentum-of-inertia (something)
   (:method ((something t))
@@ -63,21 +74,24 @@
   (:documentation "General draw methods"))
 
 (defgeneric erase (window something)
-  (:documentation "General erase method"))
+  (:documentation "General erase method")
+  (:method (window (something t))
+    ;; just do nothing
+    ))
 
 (defmethod erase (window (ship spaceship))
   (let* ((gc (graphics-context-new window)))
     (multiple-value-bind (w h) (drawable-get-size window)
       (with-slots (prev-draw-data) ship
 	(when prev-draw-data
-	  (setf (graphics-context-rgb-bg-color gc) (make-color :red 65535 :green 65535 :blue 65535))
-	  (setf (graphics-context-rgb-fg-color gc) (make-color :red 65535 :green 65535 :blue 65535))
+	  (setf (graphics-context-rgb-bg-color gc) *bg-color*)
+	  (setf (graphics-context-rgb-fg-color gc) *bg-color*)
 	  (draw-polygon window gc nil prev-draw-data))))))
 
 (defmethod draw (window (ship spaceship))
   (let* ((gc (graphics-context-new window)))
     (multiple-value-bind (w h) (drawable-get-size window)
-      (with-slots (x y phi bound-points prev-draw-data) ship
+      (with-slots (x y phi bound-points prev-draw-data color) ship
 	;; (when prev-draw-data
 	;;   (erase window ship))
 	(setf prev-draw-data
@@ -88,16 +102,41 @@
 				(list (+ (* (cos phi) (car pt)) (* (- (sin phi)) (cadr pt)))
 				      (+ (* (sin phi) (car pt)) (* (cos phi) (cadr pt)))))
 			      bound-points)))
-	(setf (graphics-context-rgb-bg-color gc) (make-color :red 65535 :green 0 :blue 0))
-	(setf (graphics-context-rgb-fg-color gc) (make-color :red 65535 :green 0 :blue 0))
+	(setf (graphics-context-rgb-bg-color gc) color)
+	(setf (graphics-context-rgb-fg-color gc) color)
 	(draw-polygon window gc nil prev-draw-data)
 	))))
+
+(defmethod draw (window (planet planet))
+  (let* ((gc (graphics-context-new window)))
+    ;; (multiple-value-bind (w h) (drawable-get-size window)
+    (with-slots (x y color radius prev-draw-data) planet
+      (setf (graphics-context-rgb-bg-color gc) color)
+      (setf (graphics-context-rgb-fg-color gc) color)
+      (setf prev-draw-data (list (round (* *out-in-ratio* (- x radius)))
+				 (round (* *out-in-ratio* (- y radius)))
+				 (round (* (* *out-in-ratio* radius) 2))
+				 (round (* (* *out-in-ratio* radius) 2))))
+      (apply #'draw-arc `(,window ,gc ,t ,@prev-draw-data
+				  0 ,(* 64 360))))))
+
+(defmethod erase (window (planet planet))
+  (with-slots (x y color radius prev-draw-data) planet
+    (when prev-draw-data
+      (let* ((gc (graphics-context-new window)))
+	;; (multiple-value-bind (w h) (drawable-get-size window)
+
+	(setf (graphics-context-rgb-bg-color gc) *bg-color*)
+	(setf (graphics-context-rgb-fg-color gc) *bg-color*)
+	(apply #'draw-arc `(,window ,gc ,t ,@prev-draw-data
+				    0 ,(* 64 360)))))))
+  
 
 (defun prepare-window (window)
   (let* ((gc (graphics-context-new window)))
     (multiple-value-bind (w h) (drawable-get-size window)
-      (setf (graphics-context-rgb-bg-color gc) (make-color :red 65535 :green 65535 :blue 65535))
-      (setf (graphics-context-rgb-fg-color gc) (make-color :red 65535 :green 65535 :blue 65535))
+      (setf (graphics-context-rgb-bg-color gc) *bg-color*)
+      (setf (graphics-context-rgb-fg-color gc) *bg-color*)
       (draw-polygon window gc t (list (make-point :x 0 :y 0)
 				      (make-point :x w :y 0)
 				      (make-point :x w :y h)
@@ -113,12 +152,21 @@
   (:method ((something t))
     (list 0 0)))
 
-(defmethod calculate-acceleration ((ship spaceship))
-  (with-slots (rear-force front-force left-force right-force phi m) ship
-    (let ((fx (/ (+ left-force right-force) m))
-	  (fy (/ (+ front-force rear-force) m)))
-      (list (+ (* (cos phi) fx) (* (- (sin phi)) fy))
-	    (+ (* (sin phi) fx) (* (cos phi) fy))))))
+(defmethod calculate-acceleration ((dot material-dot))
+  (with-slots (force m) dot
+    ;; (list 0.1 0.1)))
+    ;; (format t "force: ~a~%" force)
+    (list (/ (car force) m)
+    	  (/ (cadr force) m))))
+
+(defmethod calculate-acceleration :around ((ship spaceship))
+  (let ((pre-accel (call-next-method)))
+    (with-slots (rear-force front-force left-force right-force phi m) ship
+      (let ((fx (/ (+ left-force right-force) m))
+	    (fy (/ (+ front-force rear-force) m)))
+	(incf (car pre-accel) (+ (* (cos phi) fx) (* (- (sin phi)) fy)))
+	(incf (cadr pre-accel) (+ (* (sin phi) fx) (* (cos phi) fy)))))
+    pre-accel))
 
 (defgeneric calculate-angular-acceleration (something)
   (:method ((something t))
@@ -183,14 +231,49 @@
     (setf *out-in-ratio* (/ w *inner-width*))
     (setf *inner-height* (/ h *out-in-ratio*))))
 
+(defgeneric interaction-force (obj1 obj2)
+  (:method ((obj1 t) (obj2 t))
+    (list 0 0)))
+
+(defmethod interaction-force ((dot1 material-dot) (dot2 material-dot))
+  ;; (list 0.1 0))
+  (if (eq dot1 dot2)
+      (list 0 0)
+      (with-slots ((x1 x) (y1 y) (m1 m)) dot1
+	(with-slots ((x2 x) (y2 y) (m2 m)) dot2
+	  (let ((rvx (- x2 x1))
+		(rvy (- y2 y1)))
+	    (let ((rmod (sqrt (+ (expt rvx 2) (expt rvy 2)))))
+	      (list (/ (* *graviconstant* m1 m2 rvx)
+		       (expt rmod *dimension*))
+		    (/ (* *graviconstant* m1 m2 rvy)
+		       (expt rmod *dimension*)))))))))
+		
+
+(defun calculate-forces (lst)
+  (iter (for elt in lst)
+	(setf (car (slot-value elt 'force)) 0
+	      (cadr (slot-value elt 'force)) 0))
+  (iter (for elt1 on lst)
+	(iter (for elt2 on (cdr elt1))
+	      (with-slots ((force1 force)) (car elt1)
+		(with-slots ((force2 force)) (car elt2)
+		  (let ((force (interaction-force (car elt1) (car elt2))))
+		    (incf (car force1) (car force))
+		    (incf (cadr force1) (cadr force))
+		    (decf (car force2) (car force))
+		    (decf (cadr force2) (cadr force))))))))
 
 (defun launch ()
   (setf *ship1* (make-instance 'spaceship :x 10 :y 10 :velocity-x 0 :velocity-y 0
-			       :length 1 :width 0.5)
+			       :length 1 :width 0.5
+			       :color (make-color :red 65535 :green 0 :blue 0))
 	*ship2* (make-instance 'spaceship :x 30 :y 30 :velocity-x 0 :velocity-y 0
 			       :rotational-velocity 0
-			       :length 1 :width 0.5))
+			       :length 1 :width 0.5
+			       :color (make-color :red 0 :green 0 :blue 65535)))
   (setf *objects* (list *ship1* *ship2*))
+  (push (make-instance 'planet :x 20 :y 15 :radius 2 :mass 100000) *objects*)
   (within-main-loop
     (let ((window (make-instance 'gtk-window :type :toplevel :app-paintable t)))
       (connect-signal window "destroy" (lambda (widget)
@@ -244,11 +327,12 @@
 				(#\l (setf left-force 0))))))
 			nil))
       (gtk-main-add-timeout 10 (lambda ()
-				  (with-muffled-bare-ref-warn
-				    (move *objects*)
-				    (erase (widget-window window) *objects*)
-				    (draw (widget-window window) *objects*)
-				    t))
+				 (with-muffled-bare-ref-warn
+				   (calculate-forces *objects*)
+				   (move *objects*)
+				   (erase (widget-window window) *objects*)
+				   (draw (widget-window window) *objects*)
+				   t))
 			    :priority glib:+g-priority-high-idle+)
       (widget-show window)
       (push :pointer-motion-mask (gdk-window-events (widget-window window))))))
