@@ -31,7 +31,13 @@
    (epsilon :initform 0)
    (momentum-of-inertia)))
 
-(defclass spaceship (material-dot rotator)
+(defclass rough-collidee ()
+  (collision-radius))
+
+(defclass creature ()
+  ((alive-p :initform t)))
+
+(defclass spaceship (material-dot rotator rough-collidee creature)
   ((l :initarg :length :initform 1 :reader spaceship-length)
    (w :initarg :width :initform 1 :reader spaceship-width)
    (aspect-ratio :initarg :aspect-ratio :initform 0.75 :accessor spaceship-ratio)
@@ -43,7 +49,7 @@
    (right-force :initform 0)
    (color :initarg :color :initform (make-color :red 0 :green 0 :blue 0))))
 
-(defclass planet (material-dot)
+(defclass planet (material-dot rough-collidee)
   ((radius :initarg :radius :initform 1)
    (color :initarg :color :initform (make-color :red 0 :green 0 :blue 0))
    (prev-draw-data :initform nil)))
@@ -68,7 +74,13 @@
 	  `((0 ,half-length)
 	    (,half-width ,(- half-length (* (spaceship-length ship) (spaceship-ratio ship))))
 	    (0 ,(- half-length))
-	    (,(- half-width) ,(- half-length (* (spaceship-length ship) (spaceship-ratio ship))))))))
+	    (,(- half-width) ,(- half-length (* (spaceship-length ship) (spaceship-ratio ship)))))
+	  (slot-value ship 'collision-radius)
+	  (max half-length half-width))))
+
+(defmethod initialize-instance :after ((planet planet) &key)
+  (setf (slot-value planet 'collision-radius)
+	(slot-value planet 'radius)))
 
 (defgeneric draw (window something)
   (:documentation "General draw methods"))
@@ -79,19 +91,42 @@
     ;; just do nothing
     ))
 
+(defgeneric rough-collides-p (obj1 obj2)
+  (:method ((obj1 rough-collidee) (obj2 rough-collidee))
+    (with-slots ((cr1 collision-radius) (x1 x) (y1 y)) obj1
+      (with-slots ((cr2 collision-radius) (x2 x) (y2 y)) obj2
+	(< (+ (expt (- x2 x1) 2) (expt (- y2 y1) 2))
+	   (+ (expt cr1 2) (expt cr2 2)))))))
+
+(defgeneric collides-p (obj1 obj2)
+  (:documentation "True if two objects have collided.")
+  (:method ((obj1 t) (obj2 t))
+    nil))
+
+
+(defmethod collides-p ((ship1 spaceship) (ship2 spaceship))
+  (and (rough-collides-p ship1 ship2)
+       t))
+
+(defmethod collides-p ((ship spaceship) (planet planet))
+  (and (rough-collides-p ship planet)
+       t))
+(defmethod collides-p ((planet planet) (ship spaceship))
+  (collides-p ship planet))
+
 (defmethod erase (window (ship spaceship))
   (let* ((gc (graphics-context-new window)))
     (multiple-value-bind (w h) (drawable-get-size window)
-      (with-slots (prev-draw-data) ship
+      (with-slots (prev-draw-data alive-p) ship
 	(when prev-draw-data
 	  (setf (graphics-context-rgb-bg-color gc) *bg-color*)
 	  (setf (graphics-context-rgb-fg-color gc) *bg-color*)
-	  (draw-polygon window gc nil prev-draw-data))))))
+	  (draw-polygon window gc (not alive-p) prev-draw-data))))))
 
 (defmethod draw (window (ship spaceship))
   (let* ((gc (graphics-context-new window)))
     (multiple-value-bind (w h) (drawable-get-size window)
-      (with-slots (x y phi bound-points prev-draw-data color) ship
+      (with-slots (x y phi bound-points prev-draw-data color alive-p) ship
 	;; (when prev-draw-data
 	;;   (erase window ship))
 	(setf prev-draw-data
@@ -104,7 +139,7 @@
 			      bound-points)))
 	(setf (graphics-context-rgb-bg-color gc) color)
 	(setf (graphics-context-rgb-fg-color gc) color)
-	(draw-polygon window gc nil prev-draw-data)
+	(draw-polygon window gc (not alive-p) prev-draw-data)
 	))))
 
 (defmethod draw (window (planet planet))
@@ -264,6 +299,21 @@
 		    (decf (car force2) (car force))
 		    (decf (cadr force2) (cadr force))))))))
 
+(defun collide (lst)
+  (iter (for obj1 on lst)
+	(iter (for obj2 on (cdr obj1))
+	      (when (collides-p (car obj1) (car obj2))
+		(collision-handler (car obj1))
+		(collision-handler (car obj2))))))
+
+(defgeneric collision-handler (obj)
+  (:documentation "Function, that updates object's parameters, when it had collided.")
+  (:method ((obj t))
+    nil))
+
+(defmethod collision-handler ((ship spaceship))
+  (setf (slot-value ship 'alive-p) nil))
+
 (defun launch ()
   (setf *ship1* (make-instance 'spaceship :x 10 :y 10 :velocity-x 0 :velocity-y 0
 			       :length 1 :width 0.5
@@ -328,6 +378,7 @@
 			nil))
       (gtk-main-add-timeout 10 (lambda ()
 				 (with-muffled-bare-ref-warn
+				   (collide *objects*)
 				   (calculate-forces *objects*)
 				   (move *objects*)
 				   (erase (widget-window window) *objects*)
